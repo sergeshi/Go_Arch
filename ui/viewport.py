@@ -60,6 +60,7 @@ class Viewport3D(QOpenGLWidget):
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_LINE_SMOOTH)
         glHint(GL_LINE_SMOOTH_HINT, GL_NICEST)
+        glEnable(GL_POINT_SMOOTH)
         glLineWidth(1.5)
 
     def resizeGL(self, w: int, h: int):
@@ -91,6 +92,7 @@ class Viewport3D(QOpenGLWidget):
     # ------------------------------------------------------------------
     def _draw_grid(self, size: float = 20.0, step: float = 1.0):
         glDisable(GL_DEPTH_TEST)
+        glLineWidth(1.0)
         glBegin(GL_LINES)
 
         # основная сетка
@@ -140,7 +142,7 @@ class Viewport3D(QOpenGLWidget):
         glEnable(GL_DEPTH_TEST)
 
     def _draw_mesh(self, mesh: Mesh):
-        # грани (полупрозрачные)
+        # --- грани (полупрозрачные) ---
         glEnable(GL_POLYGON_OFFSET_FILL)
         glPolygonOffset(1.0, 1.0)
 
@@ -152,26 +154,37 @@ class Viewport3D(QOpenGLWidget):
 
             glBegin(GL_POLYGON)
             for v in face.vertices:
-                glVertex3fv(v.position)
+                glVertex3fv(v.position.astype(np.float32))
             glEnd()
 
         glDisable(GL_POLYGON_OFFSET_FILL)
 
-        # рёбра
+        # --- рёбра: сначала обычные, потом выделенные (разный LineWidth) ---
+        # обычные рёбра
+        glLineWidth(1.5)
+        glColor3f(0.85, 0.85, 0.88)
+        glBegin(GL_LINES)
+        for edge in mesh.edges:
+            if not edge.selected:
+                p1, p2 = edge.points
+                glVertex3fv(p1.astype(np.float32))
+                glVertex3fv(p2.astype(np.float32))
+        glEnd()
+
+        # выделенные рёбра
+        glLineWidth(3.0)
+        glColor3f(1.0, 0.7, 0.15)
         glBegin(GL_LINES)
         for edge in mesh.edges:
             if edge.selected:
-                glColor3f(1.0, 0.7, 0.15)
-                glLineWidth(3.0)
-            else:
-                glColor3f(0.85, 0.85, 0.88)
-                glLineWidth(1.5)
-            p1, p2 = edge.points
-            glVertex3fv(p1)
-            glVertex3fv(p2)
+                p1, p2 = edge.points
+                glVertex3fv(p1.astype(np.float32))
+                glVertex3fv(p2.astype(np.float32))
         glEnd()
 
-        # вершины
+        glLineWidth(1.5)
+
+        # --- вершины ---
         glPointSize(7.0)
         glBegin(GL_POINTS)
         for v in mesh.vertices:
@@ -179,12 +192,11 @@ class Viewport3D(QOpenGLWidget):
                 glColor3f(1.0, 0.85, 0.2)
             else:
                 glColor3f(0.95, 0.95, 0.98)
-            glVertex3fv(v.position)
+            glVertex3fv(v.position.astype(np.float32))
         glEnd()
 
     def _draw_simple_gizmo(self):
         """Временный простой гизмо в центре выделения."""
-        # найдём центр
         centers = []
         for obj in self.scene.selected:
             if isinstance(obj, Mesh):
@@ -203,17 +215,17 @@ class Viewport3D(QOpenGLWidget):
 
         # X
         glColor3f(1.0, 0.2, 0.2)
-        glVertex3fv(center)
+        glVertex3fv(center.astype(np.float32))
         glVertex3f(center[0] + size, center[1], center[2])
 
         # Y
         glColor3f(0.2, 1.0, 0.2)
-        glVertex3fv(center)
+        glVertex3fv(center.astype(np.float32))
         glVertex3f(center[0], center[1] + size, center[2])
 
         # Z
         glColor3f(0.2, 0.4, 1.0)
-        glVertex3fv(center)
+        glVertex3fv(center.astype(np.float32))
         glVertex3f(center[0], center[1], center[2] + size)
 
         glEnd()
