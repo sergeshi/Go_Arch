@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QKeySequence, QPalette, QColor, QFont
+from PySide6.QtCore import Qt, QSize, QTimer, QObject, QEvent
+from PySide6.QtGui import QAction, QKeySequence, QPalette, QColor, QHelpEvent
 from PySide6.QtWidgets import (
-    QMainWindow, QToolBar, QStatusBar, QLabel,
+    QMainWindow, QToolBar, QStatusBar,
     QButtonGroup, QToolButton, QApplication, QStyleFactory,
-    QWidget, QHBoxLayout, QSizePolicy,
+    QToolTip,
 )
 
 from .viewport import Viewport3D
@@ -91,24 +91,50 @@ QToolTip {
 """
 
 
+class TooltipDelayFilter(QObject):
+    """Показывает tooltip только после задержки (по умолчанию 1100 мс)."""
+
+    def __init__(self, delay_ms: int = 1100):
+        super().__init__()
+        self.delay_ms = delay_ms
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._show)
+        self._widget = None
+        self._pos = None
+        self._text = ""
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if et == QEvent.Type.ToolTip:
+            if isinstance(event, QHelpEvent):
+                self._widget = obj
+                self._pos = event.globalPos()
+                self._text = obj.toolTip() if hasattr(obj, "toolTip") else ""
+                if self._text:
+                    self._timer.start(self.delay_ms)
+                return True  # блокируем стандартный быстрый tooltip
+        elif et in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.Hide):
+            self._timer.stop()
+            QToolTip.hideText()
+        return False
+
+    def _show(self):
+        if self._widget and self._text:
+            QToolTip.showText(self._pos, self._text, self._widget)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Go_Arch")
         self.resize(1440, 900)
 
-        # тёмная тема
-        self.setStyleSheet(DARK_QSS)
-
-        # задержка подсказки > 1 секунды
-        QApplication.instance().setStyleSheet(DARK_QSS)  # чтобы QToolTip тоже подхватил
-        # Qt использует style hint; принудительно увеличиваем задержку
-        from PySide6.QtWidgets import QStyle
-        # через event filter / timer сделаем позже; пока ставим через style
         app = QApplication.instance()
         app.setStyle(QStyleFactory.create("Fusion"))
+        app.setStyleSheet(DARK_QSS)
 
-        # палитра Fusion тёмная
+        # тёмная палитра
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(43, 43, 46))
         palette.setColor(QPalette.WindowText, QColor(224, 224, 228))
@@ -122,6 +148,8 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.Highlight, QColor(61, 90, 128))
         palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
         app.setPalette(palette)
+
+        self.setStyleSheet(DARK_QSS)
 
         # --- центральный виджет ---
         self.viewport = Viewport3D()
@@ -140,60 +168,11 @@ class MainWindow(QMainWindow):
         # связи
         self.viewport.selection_changed.connect(self._on_selection_changed)
 
-        # Увеличиваем задержку появления подсказок (~1100 мс)
-        # Qt не даёт прямого API, поэтому ставим через style hint + небольшой хак
-        self._setup_tooltip_delay()
-
-    def _setup_tooltip_delay(self):
-        """Делаем появление tooltip примерно через 1+ секунду."""
-        # В Qt задержка tooltip контролируется через QStyle.SH_ToolTip_WakeUpDelay
-        # (миллисекунды). Мы переопределяем через proxy style было бы идеально,
-        # но для простоты используем глобальный таймер + event filter позже.
-        # Пока ставим максимально возможное через stylesheet + надеемся на систему.
-        # Более надёжный способ — свой eventFilter.
-        from PySide6.QtCore import QObject, QEvent
-
-        class TooltipDelayFilter(QObject):
-            def __init__(self, delay_ms=1100):
-                super().__init__()
-                self.delay_ms = delay_ms
-                self._timer = QTimer()
-                self._timer.setSingleShot(True)
-                self._widget = None
-                self._pos = None
-                self._text = ""
-
-            def eventFilter(self, obj, event):
-                if event.type() == QEvent.ToolTip:
-                    # перехватываем и показываем сами с задержкой
-                    from PySide6.QtGui import QHelpEvent
-                    from PySide6.QtWidgets import QToolTip
-                    if isinstance(event, QHelpEvent):
-                        self._widget = obj
-                        self._pos = event.globalPos()
-                        self._text = obj.toolTip() if hasattr(obj, "toolTip") else ""
-                        if self._text:
-                            self._timer.stop()
-                            self._timer.timeout.connect(self._show)
-                            self._timer.start(self.delay_ms)
-                        return True  # блокируем стандартный tooltip
-                elif event.type() in (QEvent.Leave, QEvent.MouseButtonPress):
-                    self._timer.stop()
-                    from PySide6.QtWidgets import QToolTip
-                    QToolTip.hideText()
-                return False
-
-            def _show(self):
-                from PySide6.QtWidgets import QToolTip
-                if self._widget and self._text:
-                    QToolTip.showText(self._pos, self._text, self._widget)
-
+        # задержка подсказок > 1 сек
         self._tip_filter = TooltipDelayFilter(1100)
-        # ставим фильтр на все кнопки тулбара
         for btn in self.tool_group.buttons():
             btn.installEventFilter(self._tip_filter)
-            # также на reset
-        # (reset добавим отдельно если нужно)
+        self._reset_btn.installEventFilter(self._tip_filter)
 
     def _create_toolbar(self):
         toolbar = QToolBar("Tools")
@@ -206,7 +185,6 @@ class MainWindow(QMainWindow):
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
 
-        # name, tooltip (с горячей клавишей), shortcut
         tools = [
             ("select",  "Выбор  (V)\nВыделение объектов, точек, рёбер и граней", "V"),
             ("line",    "Линия  (L)\nРисование отрезков", "L"),
@@ -232,7 +210,6 @@ class MainWindow(QMainWindow):
             self.tool_group.addButton(btn)
             toolbar.addWidget(btn)
 
-            # горячая клавиша
             act = QAction(self)
             act.setShortcut(QKeySequence(shortcut))
             act.triggered.connect(lambda checked=False, n=name: self._set_tool(n))
@@ -242,7 +219,6 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # кнопка сброса камеры
         reset_btn = QToolButton()
         reset_btn.setText("Reset")
         reset_btn.setToolTip("Сбросить камеру\nВернуть вид по умолчанию")
