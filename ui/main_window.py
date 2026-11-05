@@ -1,85 +1,67 @@
-"""Главное окно приложения — тёмный интерфейс в духе SketchUp."""
+"""Главное окно — тёмный интерфейс, вертикальная панель инструментов слева."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QSize, QTimer, QObject, QEvent
 from PySide6.QtGui import QAction, QKeySequence, QPalette, QColor, QHelpEvent
 from PySide6.QtWidgets import (
-    QMainWindow, QToolBar, QStatusBar,
-    QButtonGroup, QToolButton, QApplication, QStyleFactory,
-    QToolTip,
+    QMainWindow, QToolBar, QStatusBar, QButtonGroup, QToolButton,
+    QApplication, QStyleFactory, QToolTip, QComboBox, QLabel, QWidget,
+    QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy, QCheckBox,
 )
 
 from .viewport import Viewport3D
+from core.units import Unit
 
 
-# ---------------------------------------------------------------------------
-# Тёмная тема (близко к SketchUp / современных CAD)
-# ---------------------------------------------------------------------------
 DARK_QSS = """
-/* Общий фон */
 QMainWindow, QWidget {
     background-color: #2b2b2e;
     color: #e0e0e4;
     font-family: "Segoe UI", "Arial";
     font-size: 12px;
 }
-
-/* Тулбар */
 QToolBar {
     background-color: #232326;
     border: none;
-    border-bottom: 1px solid #1a1a1c;
-    spacing: 2px;
-    padding: 4px 6px;
+    spacing: 3px;
+    padding: 6px 4px;
 }
-
 QToolBar::separator {
     background-color: #3a3a3e;
-    width: 1px;
+    height: 1px;
     margin: 6px 4px;
 }
-
-/* Кнопки инструментов */
 QToolButton {
     background-color: transparent;
     color: #c8c8ce;
     border: 1px solid transparent;
     border-radius: 4px;
-    padding: 6px 10px;
-    min-width: 52px;
-    min-height: 28px;
+    padding: 8px 6px;
+    min-width: 72px;
+    min-height: 32px;
+    text-align: center;
 }
-
 QToolButton:hover {
     background-color: #3a3a40;
     color: #ffffff;
     border: 1px solid #4a4a52;
 }
-
 QToolButton:checked {
     background-color: #3d5a80;
     color: #ffffff;
     border: 1px solid #5a7aa0;
 }
-
 QToolButton:pressed {
     background-color: #2f4a6a;
 }
-
-/* Статусбар */
 QStatusBar {
     background-color: #1e1e20;
     color: #a0a0a8;
     border-top: 1px solid #141416;
     font-size: 11px;
 }
-
-QStatusBar::item {
-    border: none;
-}
-
-/* Подсказки */
+QStatusBar::item { border: none; }
 QToolTip {
     background-color: #1a1a1c;
     color: #e8e8ec;
@@ -88,12 +70,41 @@ QToolTip {
     border-radius: 4px;
     font-size: 12px;
 }
+QComboBox {
+    background-color: #2a2a2e;
+    color: #e0e0e4;
+    border: 1px solid #3a3a40;
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-width: 64px;
+}
+QComboBox:hover { border: 1px solid #5a5a62; }
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView {
+    background-color: #2a2a2e;
+    color: #e0e0e4;
+    selection-background-color: #3d5a80;
+}
+QCheckBox { color: #c8c8ce; spacing: 6px; }
+QCheckBox::indicator {
+    width: 14px; height: 14px;
+    border: 1px solid #4a4a52;
+    border-radius: 3px;
+    background: #2a2a2e;
+}
+QCheckBox::indicator:checked {
+    background: #3d5a80;
+    border-color: #5a7aa0;
+}
+QLabel { color: #a0a0a8; }
+QFrame#LeftPanel {
+    background-color: #232326;
+    border-right: 1px solid #1a1a1c;
+}
 """
 
 
 class TooltipDelayFilter(QObject):
-    """Показывает tooltip только после задержки (по умолчанию 1100 мс)."""
-
     def __init__(self, delay_ms: int = 1100):
         super().__init__()
         self.delay_ms = delay_ms
@@ -113,7 +124,7 @@ class TooltipDelayFilter(QObject):
                 self._text = obj.toolTip() if hasattr(obj, "toolTip") else ""
                 if self._text:
                     self._timer.start(self.delay_ms)
-                return True  # блокируем стандартный быстрый tooltip
+                return True
         elif et in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.Hide):
             self._timer.stop()
             QToolTip.hideText()
@@ -134,7 +145,6 @@ class MainWindow(QMainWindow):
         app.setStyle(QStyleFactory.create("Fusion"))
         app.setStyleSheet(DARK_QSS)
 
-        # тёмная палитра
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(43, 43, 46))
         palette.setColor(QPalette.WindowText, QColor(224, 224, 228))
@@ -149,38 +159,43 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
         app.setPalette(palette)
 
-        self.setStyleSheet(DARK_QSS)
+        # --- центральная область: левая панель + вьюпорт ---
+        central = QWidget()
+        layout = QHBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # --- центральный виджет ---
+        self.left_panel = self._create_left_panel()
+        layout.addWidget(self.left_panel)
+
         self.viewport = Viewport3D()
-        self.setCentralWidget(self.viewport)
+        layout.addWidget(self.viewport, stretch=1)
 
-        # --- тулбар инструментов ---
-        self._create_toolbar()
+        self.setCentralWidget(central)
 
-        # --- статусбар ---
+        # статусбар
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.status.showMessage(
             "Средняя кнопка — Orbit  ·  Shift+средняя / Shift+колёсико — Pan  ·  Колёсико — Zoom"
         )
 
-        # связи
         self.viewport.selection_changed.connect(self._on_selection_changed)
+        self.viewport.status_message.connect(self.status.showMessage)
 
-        # задержка подсказок > 1 сек
+        # tooltips delay
         self._tip_filter = TooltipDelayFilter(1100)
         for btn in self.tool_group.buttons():
             btn.installEventFilter(self._tip_filter)
-        self._reset_btn.installEventFilter(self._tip_filter)
 
-    def _create_toolbar(self):
-        toolbar = QToolBar("Tools")
-        toolbar.setIconSize(QSize(24, 24))
-        toolbar.setMovable(False)
-        toolbar.setFloatable(False)
-        toolbar.setToolButtonStyle(Qt.ToolButtonTextOnly)  # пока текст, потом иконки
-        self.addToolBar(Qt.TopToolBarArea, toolbar)
+    def _create_left_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("LeftPanel")
+        panel.setFixedWidth(96)
+
+        vbox = QVBoxLayout(panel)
+        vbox.setContentsMargins(4, 8, 4, 8)
+        vbox.setSpacing(4)
 
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
@@ -190,12 +205,12 @@ class MainWindow(QMainWindow):
             ("line",    "Линия  (L)\nРисование отрезков", "L"),
             ("rect",    "Прямоугольник  (R)\nРисование прямоугольников", "R"),
             ("circle",  "Круг  (C)\nРисование окружностей", "C"),
-            ("polygon", "Многоугольник  (P)\nРисование правильных многоугольников", "P"),
-            ("arc",     "Дуга  (A)\nРисование дуг", "A"),
-            ("move",    "Перемещение  (M)\nПеремещение выделенного", "M"),
-            ("rotate",  "Поворот  (Q)\nВращение выделенного", "Q"),
-            ("scale",   "Масштаб  (S)\nМасштабирование выделенного", "S"),
-            ("extrude", "Выдавливание  (E)\nPush/Pull — выдавливание граней", "E"),
+            ("polygon", "Многоугольник  (P)\n[ ] — число сторон", "P"),
+            ("arc",     "Дуга  (A)\nТри точки: начало, конец, точка на дуге", "A"),
+            ("move",    "Перемещение  (M)\nС привязкой к сетке и осям", "M"),
+            ("rotate",  "Поворот  (Q)\nВокруг вертикальной оси, шаг 15°", "Q"),
+            ("scale",   "Масштаб  (S)\nРавномерное масштабирование", "S"),
+            ("extrude", "Выдавливание  (E)\nPush/Pull грани", "E"),
         ]
 
         for name, tip, shortcut in tools:
@@ -205,10 +220,11 @@ class MainWindow(QMainWindow):
             btn.setCheckable(True)
             btn.setProperty("tool_name", name)
             btn.setAutoRaise(True)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             if name == "select":
                 btn.setChecked(True)
             self.tool_group.addButton(btn)
-            toolbar.addWidget(btn)
+            vbox.addWidget(btn)
 
             act = QAction(self)
             act.setShortcut(QKeySequence(shortcut))
@@ -217,28 +233,78 @@ class MainWindow(QMainWindow):
 
         self.tool_group.buttonClicked.connect(self._on_tool_button)
 
-        toolbar.addSeparator()
+        vbox.addSpacing(12)
+
+        # --- единицы ---
+        unit_label = QLabel("Единицы")
+        unit_label.setAlignment(Qt.AlignCenter)
+        vbox.addWidget(unit_label)
+
+        self.unit_combo = QComboBox()
+        self.unit_combo.addItem("mm", Unit.MM)
+        self.unit_combo.addItem("cm", Unit.CM)
+        self.unit_combo.addItem("m", Unit.M)
+        self.unit_combo.setCurrentIndex(1)  # cm
+        self.unit_combo.currentIndexChanged.connect(self._on_unit_changed)
+        vbox.addWidget(self.unit_combo)
+
+        vbox.addSpacing(8)
+
+        # --- snap ---
+        self.snap_check = QCheckBox("Snap")
+        self.snap_check.setChecked(True)
+        self.snap_check.setToolTip("Привязка к сетке, вершинам, осям")
+        self.snap_check.toggled.connect(self._on_snap_toggled)
+        vbox.addWidget(self.snap_check)
+
+        self.grid_combo = QComboBox()
+        for label, meters in [("1 mm", 0.001), ("5 mm", 0.005), ("1 cm", 0.01),
+                              ("5 cm", 0.05), ("10 cm", 0.1), ("50 cm", 0.5), ("1 m", 1.0)]:
+            self.grid_combo.addItem(label, meters)
+        self.grid_combo.setCurrentIndex(4)  # 10 cm
+        self.grid_combo.setToolTip("Шаг сетки / привязки")
+        self.grid_combo.currentIndexChanged.connect(self._on_grid_changed)
+        vbox.addWidget(self.grid_combo)
+
+        vbox.addSpacing(12)
 
         reset_btn = QToolButton()
         reset_btn.setText("Reset")
-        reset_btn.setToolTip("Сбросить камеру\nВернуть вид по умолчанию")
+        reset_btn.setToolTip("Сбросить камеру")
         reset_btn.setAutoRaise(True)
         reset_btn.clicked.connect(self._reset_camera)
-        toolbar.addWidget(reset_btn)
-        self._reset_btn = reset_btn
+        vbox.addWidget(reset_btn)
+
+        vbox.addStretch(1)
+        return panel
 
     def _on_tool_button(self, btn: QToolButton):
-        name = btn.property("tool_name")
-        self._set_tool(name)
+        self._set_tool(btn.property("tool_name"))
 
     def _set_tool(self, name: str):
-        self.viewport.current_tool = name
+        self.viewport.set_tool(name)
         for btn in self.tool_group.buttons():
             if btn.property("tool_name") == name:
                 btn.setChecked(True)
                 break
-        self.status.showMessage(f"Инструмент: {name}")
+
+    def _on_unit_changed(self, index: int):
+        unit = self.unit_combo.itemData(index)
+        if unit is not None:
+            self.viewport.units.set_unit(unit)
+            self.viewport.update()
+            self.status.showMessage(f"Единицы: {unit.value}")
+
+    def _on_snap_toggled(self, checked: bool):
+        self.viewport.snap.enabled = checked
         self.viewport.update()
+
+    def _on_grid_changed(self, index: int):
+        size = self.grid_combo.itemData(index)
+        if size is not None:
+            self.viewport.snap.set_grid_size(float(size))
+            self.viewport.update()
+            self.status.showMessage(f"Шаг привязки: {self.grid_combo.currentText()}")
 
     def _reset_camera(self):
         self.viewport.camera.distance = 12.0
