@@ -25,6 +25,7 @@ class Viewport3D(QOpenGLWidget):
     - Средняя кнопка + drag  → Orbit
     - Shift + Средняя + drag → Pan
     - Колёсико               → Zoom
+    - Shift + Колёсико       → Pan
     - Левая кнопка           → инструмент (пока просто выделение)
     """
 
@@ -54,7 +55,7 @@ class Viewport3D(QOpenGLWidget):
     # OpenGL lifecycle
     # ------------------------------------------------------------------
     def initializeGL(self):
-        glClearColor(0.18, 0.18, 0.20, 1.0)  # тёмный фон как в SketchUp
+        glClearColor(0.16, 0.16, 0.18, 1.0)  # тёмный фон
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_BLEND)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
@@ -96,19 +97,17 @@ class Viewport3D(QOpenGLWidget):
         glBegin(GL_LINES)
 
         # основная сетка
-        glColor4f(0.35, 0.35, 0.38, 0.6)
+        glColor4f(0.32, 0.32, 0.35, 0.55)
         for i in range(int(-size), int(size) + 1):
             if i == 0:
                 continue
-            # линии вдоль X
             glVertex3f(i * step, 0, -size)
             glVertex3f(i * step, 0, size)
-            # линии вдоль Z
             glVertex3f(-size, 0, i * step)
             glVertex3f(size, 0, i * step)
 
         # оси сетки (чуть ярче)
-        glColor4f(0.55, 0.55, 0.58, 0.9)
+        glColor4f(0.48, 0.48, 0.52, 0.85)
         glVertex3f(-size, 0, 0)
         glVertex3f(size, 0, 0)
         glVertex3f(0, 0, -size)
@@ -123,17 +122,17 @@ class Viewport3D(QOpenGLWidget):
         glBegin(GL_LINES)
 
         # X — красный
-        glColor3f(0.9, 0.25, 0.25)
+        glColor3f(0.92, 0.28, 0.28)
         glVertex3f(0, 0, 0)
         glVertex3f(length, 0, 0)
 
         # Y — зелёный
-        glColor3f(0.3, 0.85, 0.3)
+        glColor3f(0.28, 0.82, 0.32)
         glVertex3f(0, 0, 0)
         glVertex3f(0, length, 0)
 
         # Z — синий
-        glColor3f(0.3, 0.45, 0.95)
+        glColor3f(0.28, 0.48, 0.95)
         glVertex3f(0, 0, 0)
         glVertex3f(0, 0, length)
 
@@ -148,9 +147,9 @@ class Viewport3D(QOpenGLWidget):
 
         for face in mesh.faces:
             if face.selected:
-                glColor4f(0.3, 0.6, 1.0, 0.45)
+                glColor4f(0.25, 0.55, 0.95, 0.42)
             else:
-                glColor4f(0.55, 0.55, 0.58, 0.35)
+                glColor4f(0.50, 0.50, 0.54, 0.32)
 
             glBegin(GL_POLYGON)
             for v in face.vertices:
@@ -159,10 +158,9 @@ class Viewport3D(QOpenGLWidget):
 
         glDisable(GL_POLYGON_OFFSET_FILL)
 
-        # --- рёбра: сначала обычные, потом выделенные (разный LineWidth) ---
-        # обычные рёбра
+        # --- рёбра: сначала обычные, потом выделенные ---
         glLineWidth(1.5)
-        glColor3f(0.85, 0.85, 0.88)
+        glColor3f(0.82, 0.82, 0.86)
         glBegin(GL_LINES)
         for edge in mesh.edges:
             if not edge.selected:
@@ -171,9 +169,8 @@ class Viewport3D(QOpenGLWidget):
                 glVertex3fv(p2.astype(np.float32))
         glEnd()
 
-        # выделенные рёбра
         glLineWidth(3.0)
-        glColor3f(1.0, 0.7, 0.15)
+        glColor3f(1.0, 0.72, 0.18)
         glBegin(GL_LINES)
         for edge in mesh.edges:
             if edge.selected:
@@ -191,7 +188,7 @@ class Viewport3D(QOpenGLWidget):
             if v.selected:
                 glColor3f(1.0, 0.85, 0.2)
             else:
-                glColor3f(0.95, 0.95, 0.98)
+                glColor3f(0.93, 0.93, 0.96)
             glVertex3fv(v.position.astype(np.float32))
         glEnd()
 
@@ -213,17 +210,14 @@ class Viewport3D(QOpenGLWidget):
         glLineWidth(3.0)
         glBegin(GL_LINES)
 
-        # X
         glColor3f(1.0, 0.2, 0.2)
         glVertex3fv(center.astype(np.float32))
         glVertex3f(center[0] + size, center[1], center[2])
 
-        # Y
         glColor3f(0.2, 1.0, 0.2)
         glVertex3fv(center.astype(np.float32))
         glVertex3f(center[0], center[1] + size, center[2])
 
-        # Z
         glColor3f(0.2, 0.4, 1.0)
         glVertex3fv(center.astype(np.float32))
         glVertex3f(center[0], center[1], center[2] + size)
@@ -236,17 +230,19 @@ class Viewport3D(QOpenGLWidget):
         """Текст поверх OpenGL (через QPainter)."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QColor(200, 200, 210))
-        font = QFont("Segoe UI", 10)
+        painter.setPen(QColor(180, 180, 190))
+        font = QFont("Segoe UI", 9)
         painter.setFont(font)
 
         info = (
-            f"Tool: {self.current_tool}  |  "
-            f"Dist: {self.camera.distance:.1f}  |  "
-            f"Objects: {len(self.scene.root)}"
+            f"{self.current_tool.upper()}  ·  "
+            f"dist {self.camera.distance:.1f}"
         )
-        painter.drawText(12, 22, info)
-        painter.drawText(12, self.height() - 12, "MMB Orbit  •  Shift+MMB Pan  •  Wheel Zoom")
+        painter.drawText(12, 20, info)
+        painter.drawText(
+            12, self.height() - 10,
+            "MMB Orbit  ·  Shift+MMB / Shift+Wheel Pan  ·  Wheel Zoom"
+        )
         painter.end()
 
     # ------------------------------------------------------------------
@@ -263,7 +259,6 @@ class Viewport3D(QOpenGLWidget):
             self.setCursor(Qt.ClosedHandCursor)
 
         elif event.button() == Qt.LeftButton:
-            # пока простое выделение по клику (позже raycast)
             self._handle_select_click(event)
 
         self.update()
@@ -293,8 +288,19 @@ class Viewport3D(QOpenGLWidget):
         self.update()
 
     def wheelEvent(self, event: QWheelEvent):
-        delta = event.angleDelta().y() / 120.0  # стандартные «щелчки»
-        self.camera.zoom(delta)
+        delta_y = event.angleDelta().y() / 120.0
+        delta_x = event.angleDelta().x() / 120.0
+
+        if event.modifiers() & Qt.ShiftModifier:
+            # Shift + колесо → Pan
+            # вертикальное колесо двигает вверх/вниз, горизонтальное (если есть) — влево/вправо
+            # масштабируем относительно расстояния камеры
+            pan_scale = 40.0  # чувствительность
+            self.camera.pan(-delta_x * pan_scale, -delta_y * pan_scale)
+        else:
+            # обычное колесо → Zoom
+            self.camera.zoom(delta_y)
+
         self.update()
 
     # ------------------------------------------------------------------
@@ -304,7 +310,6 @@ class Viewport3D(QOpenGLWidget):
         """Пока выделяем весь меш при клике (позже сделаем raycast)."""
         additive = bool(event.modifiers() & Qt.ControlModifier)
 
-        # для демо — выделяем первый меш
         meshes = self.scene.all_meshes()
         if meshes:
             self.scene.select(meshes[0], additive=additive)
