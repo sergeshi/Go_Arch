@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 import numpy as np
 from OpenGL.GL import *
 from OpenGL.GLU import *
@@ -42,12 +42,14 @@ class Viewport3D(QOpenGLWidget):
         self.current_tool_name = "select"
         self.current_tool = None
 
-        # инициализация инструментов
         for name, cls in TOOL_CLASSES.items():
             self.tools[name] = cls(self)
         self.set_tool("select")
 
         self.scene.create_test_box(size=2.0, center=(0, 1, 0))
+
+        # курсор на земле (для отладки / превью)
+        self.cursor_world: Optional[np.ndarray] = None
 
     def set_tool(self, name: str):
         if self.current_tool:
@@ -56,6 +58,7 @@ class Viewport3D(QOpenGLWidget):
         self.current_tool = self.tools.get(name)
         if self.current_tool:
             self.current_tool.activate()
+        self.setFocus()
         self._emit_status()
         self.update()
 
@@ -64,62 +67,89 @@ class Viewport3D(QOpenGLWidget):
             self.status_message.emit(self.current_tool.status_text())
 
     # ------------------------------------------------------------------
-    # Ray → плоскость Y = const (земля или высота last point)
+    # Ray casting
     # ------------------------------------------------------------------
-    def screen_to_world(self, x: float, y: float, plane_y: float = 0.0) -> Optional[np.ndarray]:
-        """Пересечение луча из камеры с горизонтальной плоскостью y = plane_y."""
-        w, h = self.width(), self.height()
-        if w < 1 or h < 1:
-            return None
+    def _camera_basis(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """eye, forward, right, up"""
+        eye = self.camera.position()
+        target = np.asarray(self.camera.target, dtype=np.float64)
+        forward = target - eye
+        fl = np.linalg.norm(forward)
+        if fl < 1e-12:
+            forward = np.array([0.0, 0.0, -1.0])
+        else:
+            forward = forward / fl
 
-        # NDC
+        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        # если смотрим почти вертикально — другой up
+        if abs(np.dot(forward, world_up)) > 0.999:
+            world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+        right = np.cross(forward, world_up)
+        right = right / (np.linalg.norm(right) + 1e-12)
+        up = np.cross(right, forward)
+        up = up / (np.linalg.norm(up) + 1e-12)
+        return eye, forward, right, up
+
+    def screen_to_ray(self, x: float, y: float) -> Tuple[np.ndarray, np.ndarray]:
+        """Возвращает (origin, direction) луча из пикселя."""
+        w = max(self.width(), 1)
+        h = max(self.height(), 1)
+
+        # NDC [-1, 1], Y вверх
         nx = (2.0 * x) / w - 1.0
         ny = 1.0 - (2.0 * y) / h
 
-        aspect = w / h
+        aspect = w / float(h)
         fov_rad = np.radians(self.camera.fov)
-        tan_half = np.tan(fov_rad / 2)
+        tan_half = np.tan(fov_rad * 0.5)
 
-        # луч в view space
-        ray_view = np.array([
+        # В view-space камера смотрит вдоль -Z.
+        # view X → right, view Y → up, view -Z → forward (направление взгляда)
+        dir_view = np.array([
             nx * tan_half * aspect,
             ny * tan_half,
             -1.0,
         ], dtype=np.float64)
-        ray_view = ray_view / np.linalg.norm(ray_view)
 
-        # ориентация камеры
-        eye = self.camera.position()
-        target = self.camera.target
-        forward = target - eye
-        forward = forward / (np.linalg.norm(forward) + 1e-12)
-        right = np.cross(forward, np.array([0.0, 1.0, 0.0]))
-        right = right / (np.linalg.norm(right) + 1e-12)
-        up = np.cross(right, forward)
+        eye, forward, right, up = self._camera_basis()
 
-        # view → world
-        ray_world = right * ray_view[0] + up * ray_view[1] + forward * ray_view[2]
-        ray_world = ray_world / (np.linalg.norm(ray_world) + 1e-12)
+        # Правильный переход view → world:
+        # dir_world = right*vx + up*vy + forward*(-vz)
+        ray_dir = right * dir_view[0] + up * dir_view[1] + forward * (-dir_view[2])
+        ray_dir = ray_dir / (np.linalg.norm(ray_dir) + 1e-12)
+        return eye, ray_dir
 
-        # пересечение с y = plane_y
-        if abs(ray_world[1]) < 1e-8:
-            return None
-        t = (plane_y - eye[1]) / ray_world[1]
-        if t < 0:
-            return None
-        return eye + ray_world * t
+    def screen_to_world(self, x: float, y: float, plane_y: float = 0.0) -> Optional[np.ndarray]:
+        """Пересечение луча с горизонтальной плоскостью y = plane_y."""
+        eye, ray_dir = self.screen_to_ray(x, y)
+
+        if abs(ray_dir[1]) < 1e-10:
+            # луч параллелен плоскости — берём точку на луче на расстоянии distance
+            return eye + ray_dir * self.camera.distance
+
+        t = (plane_y - eye[1]) / ray_dir[1]
+        # допускаем небольшое отрицательное (камера чуть ниже плоскости)
+        if t < -0.01:
+            # луч уходит от плоскости — fallback: проекция target на плоскость + смещение по экрану
+            t = abs(t)
+
+        pt = eye + ray_dir * t
+        return pt
 
     def _event_world_pos(self, event) -> Optional[np.ndarray]:
         pos = event.position()
-        # если есть точки у инструмента — рисуем на их высоте
         plane_y = 0.0
         tool = self.current_tool
-        if tool and hasattr(tool, "points") and tool.points:
-            plane_y = float(tool.points[-1][1])
-        elif tool and hasattr(tool, "p1") and tool.p1 is not None:
-            plane_y = float(tool.p1[1])
-        elif tool and hasattr(tool, "center") and tool.center is not None:
-            plane_y = float(tool.center[1])
+        if tool is not None:
+            if getattr(tool, "points", None):
+                plane_y = float(tool.points[-1][1])
+            elif getattr(tool, "p1", None) is not None:
+                plane_y = float(tool.p1[1])
+            elif getattr(tool, "center", None) is not None:
+                plane_y = float(tool.center[1])
+            elif getattr(tool, "start", None) is not None:
+                plane_y = float(tool.start[1])
         return self.screen_to_world(pos.x(), pos.y(), plane_y=plane_y)
 
     # ------------------------------------------------------------------
@@ -155,7 +185,30 @@ class Viewport3D(QOpenGLWidget):
         if self.current_tool:
             self.current_tool.draw_preview()
 
+        # курсор привязки
+        if self.cursor_world is not None:
+            self._draw_cursor(self.cursor_world)
+
         self._draw_overlay()
+
+    def _draw_cursor(self, p: np.ndarray):
+        glDisable(GL_DEPTH_TEST)
+        glPointSize(12.0)
+        glBegin(GL_POINTS)
+        glColor3f(1.0, 0.4, 0.2)
+        glVertex3fv(p.astype(np.float32))
+        glEnd()
+        # крестик
+        s = max(self.snap.grid_size * 0.5, 0.05)
+        glLineWidth(1.5)
+        glColor3f(1.0, 0.5, 0.2)
+        glBegin(GL_LINES)
+        glVertex3f(p[0] - s, p[1], p[2])
+        glVertex3f(p[0] + s, p[1], p[2])
+        glVertex3f(p[0], p[1], p[2] - s)
+        glVertex3f(p[0], p[1], p[2] + s)
+        glEnd()
+        glEnable(GL_DEPTH_TEST)
 
     def _draw_grid(self, size: float = 20.0, step: float = 1.0):
         glDisable(GL_DEPTH_TEST)
@@ -278,6 +331,12 @@ class Viewport3D(QOpenGLWidget):
         snap = "ON" if self.snap.enabled else "OFF"
         info = f"{self.current_tool_name.upper()}  ·  {unit}  ·  snap {snap}  ·  grid {self.units.format(self.snap.grid_size)}"
         painter.drawText(12, 20, info)
+        if self.cursor_world is not None:
+            p = self.cursor_world
+            painter.drawText(
+                12, 38,
+                f"xyz  {self.units.format(p[0])}  {self.units.format(p[1])}  {self.units.format(p[2])}"
+            )
         painter.drawText(
             12, self.height() - 10,
             "MMB Orbit  ·  Shift+MMB / Shift+Wheel Pan  ·  Wheel Zoom"
@@ -288,6 +347,7 @@ class Viewport3D(QOpenGLWidget):
     # Events
     # ------------------------------------------------------------------
     def mousePressEvent(self, event: QMouseEvent):
+        self.setFocus()
         self._last_pos = event.position().toPoint()
 
         if event.button() == Qt.MiddleButton:
@@ -300,6 +360,18 @@ class Viewport3D(QOpenGLWidget):
 
         if event.button() == Qt.LeftButton and self.current_tool:
             world = self._event_world_pos(event)
+            if world is not None:
+                # snap для отображения курсора
+                last = None
+                tool = self.current_tool
+                if getattr(tool, "points", None):
+                    last = tool.points[-1]
+                elif getattr(tool, "p1", None) is not None:
+                    last = tool.p1
+                elif getattr(tool, "center", None) is not None:
+                    last = tool.center
+                snapped = self.snap.snap_point(world, self.scene, last_point=last)
+                self.cursor_world = snapped.point
             self.current_tool.on_mouse_press(event, world)
             self._emit_status()
 
@@ -320,12 +392,29 @@ class Viewport3D(QOpenGLWidget):
             self._last_pos = pos
             return
 
-        if self.current_tool:
-            world = self._event_world_pos(event)
-            self.current_tool.on_mouse_move(event, world)
-            self._emit_status()
+        world = self._event_world_pos(event)
+        if world is not None:
+            last = None
+            tool = self.current_tool
+            if tool is not None:
+                if getattr(tool, "points", None):
+                    last = tool.points[-1]
+                elif getattr(tool, "p1", None) is not None:
+                    last = tool.p1
+                elif getattr(tool, "center", None) is not None:
+                    last = tool.center
+                elif getattr(tool, "start", None) is not None:
+                    last = tool.start
+            snapped = self.snap.snap_point(world, self.scene, last_point=last)
+            self.cursor_world = snapped.point
+            if self.current_tool:
+                self.current_tool.on_mouse_move(event, snapped.point)
+                self._emit_status()
+        else:
+            self.cursor_world = None
 
         self._last_pos = pos
+        self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent):
         self._orbiting = False
@@ -333,7 +422,7 @@ class Viewport3D(QOpenGLWidget):
         self._last_pos = None
         self.setCursor(Qt.ArrowCursor)
 
-        if self.current_tool:
+        if self.current_tool and event.button() == Qt.LeftButton:
             world = self._event_world_pos(event)
             self.current_tool.on_mouse_release(event, world)
             self._emit_status()
